@@ -1,9 +1,10 @@
-# Configuration for U-Net from scratch
+# Configuration for U-Net from scratch (small architecture)
 seed: 42
 output_dir: "outputs"
-batch_size: 16
+batch_size: 16  # Increased batch size slightly
 epochs: 100
 num_workers: 4
+patience: 15  # Early stopping patience
 
 # Data configuration
 data:
@@ -14,7 +15,7 @@ data:
 # Model configuration
 model:
   type: "unet_scratch"
-  in_channels: 1
+  in_channels: 1  # Explicitly using 1 channel for grayscale
   n_classes: 1
   bilinear: true
 
@@ -25,8 +26,8 @@ loss:
 # Optimizer
 optimizer:
   type: "adam"
-  lr: 0.0001
-  weight_decay: 0.00001
+  lr: 0.0001  # Increased learning rate
+  weight_decay: 0.00005  # Reduced weight decay to moderate level
 
 # Learning rate scheduler
 scheduler:

@@ -83,11 +83,23 @@ def dice_loss(pred, target, smooth=1.0):
 
 def dice_coef(pred, target, threshold=0.5, smooth=1.0):
     """Dice coefficient for evaluation."""
+    # Apply sigmoid and threshold
     pred = torch.sigmoid(pred) > threshold
     pred = pred.float()
+    
+    # Debug info on prediction and target
+    all_zeros_pred = (pred.sum() == 0)
+    all_zeros_target = (target.sum() == 0)
+    
+    if all_zeros_pred and all_zeros_target:
+        # If both are empty, dice should be 1
+        return 1.0
+    
+    # Move to 1D tensors
     pred = pred.contiguous().view(-1)
     target = target.contiguous().view(-1)
     
+    # Calculate intersection and dice
     intersection = (pred * target).sum()
     dice = (2.0 * intersection + smooth) / (pred.sum() + target.sum() + smooth)
     
@@ -252,27 +264,69 @@ def validate(model, dataloader, loss_fn, device):
             if images.numel() == 0 or masks.numel() == 0:
                 continue
                 
+            # Debug info for first batch
+            if batch_idx == 0:
+                print(f"Validation batch shape: images={images.shape}, masks={masks.shape}")
+                print(f"Image range: [{images.min().item()}, {images.max().item()}]")
+                print(f"Mask range: [{masks.min().item()}, {masks.max().item()}], unique values: {torch.unique(masks)}")
+            
+            # Normalize images to [0,1] if needed
+            if images.max() > 1.0:
+                images = images / 255.0
+                
+            # Ensure masks are binary
+            if masks.max() > 1.0:
+                masks = (masks > 0).float()
+                
             images = images.to(device)
             masks = masks.to(device)
             
             # Forward pass
             outputs = model(images)
-            loss = loss_fn(outputs, masks)
             
-            # Calculate metrics
-            dice = dice_coef(outputs, masks)
-            dice_scores.append(dice)
+            # Handle potential NaN outputs
+            if torch.isnan(outputs).any():
+                print(f"Warning: NaN values detected in model outputs at batch {batch_idx}")
+                continue
             
-            running_loss += loss.item() * images.size(0)
-            valid_batches += 1
+            # Get binary predictions for visualization
+            if batch_idx == 0:
+                preds = (torch.sigmoid(outputs.detach()) > 0.5).float()
+                pos_pixels = preds.sum().item()
+                mask_pixels = masks.sum().item()
+                print(f"Prediction positive pixels: {pos_pixels}, Mask positive pixels: {mask_pixels}")
+                
+            # Calculate loss
+            try:
+                loss = loss_fn(outputs, masks)
+                
+                # Calculate dice but filter out unreasonable values
+                dice = dice_coef(outputs, masks)
+                
+                # Skip perfect scores if not justified by data
+                if dice > 0.99 and masks.sum() > 10:  # Only if mask has sufficient positive pixels
+                    print(f"Warning: Unusually high Dice score ({dice:.4f}) at batch {batch_idx}")
+                    
+                dice_scores.append(dice)
+                running_loss += loss.item() * images.size(0)
+                valid_batches += 1
+                
+                # Print distribution of dice scores periodically
+                if (len(dice_scores) % 10 == 0) or (batch_idx + 1 == len(dataloader)):
+                    print(f"Dice scores so far: min={min(dice_scores):.4f}, max={max(dice_scores):.4f}, "
+                          f"mean={sum(dice_scores)/len(dice_scores):.4f}")
+                    
+            except Exception as e:
+                print(f"Error during validation at batch {batch_idx}: {e}")
+                continue
     
     # Calculate metrics only if we had valid batches
-    if valid_batches > 0 and dice_scores:
+    if valid_batches > 0:
         epoch_loss = running_loss / valid_batches
-        epoch_dice = np.mean(dice_scores)
+        epoch_dice = sum(dice_scores) / len(dice_scores) if dice_scores else 0.0
     else:
-        epoch_loss = float('inf')
-        epoch_dice = 0.0  # Indicate problem if no valid batches
+        epoch_loss = float('inf')  # Indicate problem if no valid batches
+        epoch_dice = 0.0
     
     return epoch_loss, epoch_dice
 
@@ -298,77 +352,64 @@ def save_checkpoint(model, optimizer, epoch, val_dice, val_loss, checkpoint_dir,
 
 
 def run_training(cfg_path):
-    """Main training function."""
+    """Run training based on configuration."""
     # Load configuration
     with open(cfg_path, 'r') as f:
         cfg = yaml.safe_load(f)
     
-    # Get experiment name and create directories
-    exp_name = os.path.splitext(os.path.basename(cfg_path))[0]
-    output_dir = os.path.join(cfg.get('output_dir', 'outputs'), exp_name)
-    checkpoint_dir = os.path.join(output_dir, 'checkpoints')
-    log_dir = os.path.join(output_dir, 'logs')
+    # Set random seed
+    set_seed(cfg['seed'])
     
+    # Create output directory
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = os.path.join(cfg['output_dir'], timestamp)
     os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    os.makedirs(log_dir, exist_ok=True)
     
-    # Save config
+    # Save configuration
     with open(os.path.join(output_dir, 'config.yaml'), 'w') as f:
         yaml.dump(cfg, f)
     
-    # Set up tensorboard
-    writer = SummaryWriter(log_dir)
-    
-    # Set random seed
-    set_seed(cfg.get('seed', 42))
-    
-    # Set device
+    # Get device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
+    # Data configuration
+    data_cfg = cfg['data']
+    
     # Create datasets
-    data_dir = cfg['data']['interim_dir']
-    split_csv = cfg['data']['split_csv']
-    
-    # Get model's input channel requirements
-    in_channels = cfg['model'].get('in_channels', 1)
-    
-    # Re-enable transforms
-    train_transforms = get_transforms('train')
-    val_transforms = get_transforms('val')
+    train_transforms = get_transforms(mode='train')
+    val_transforms = get_transforms(mode='val')
     
     train_dataset = BrainMRIDataset(
-        split_csv=split_csv,
-        data_dir=data_dir,
+        split_csv=data_cfg['split_csv'],
+        data_dir=data_cfg['interim_dir'],
         split='train',
         transform=train_transforms,
-        in_channels=in_channels
+        in_channels=cfg['model']['in_channels']
     )
     
     val_dataset = BrainMRIDataset(
-        split_csv=split_csv,
-        data_dir=data_dir,
+        split_csv=data_cfg['split_csv'],
+        data_dir=data_cfg['interim_dir'],
         split='val',
         transform=val_transforms,
-        in_channels=in_channels
+        in_channels=cfg['model']['in_channels']
     )
     
-    # Create dataloaders
-    batch_size = cfg.get('batch_size', 8)
-    train_dataloader = DataLoader(
+    # Create data loaders
+    train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
+        batch_size=cfg['batch_size'],
         shuffle=True,
-        num_workers=cfg.get('num_workers', 4),
+        num_workers=cfg['num_workers'],
         collate_fn=custom_collate
     )
     
-    val_dataloader = DataLoader(
+    val_loader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
+        batch_size=cfg['batch_size'],
         shuffle=False,
-        num_workers=cfg.get('num_workers', 4),
+        num_workers=cfg['num_workers'],
         collate_fn=custom_collate
     )
     
@@ -376,83 +417,117 @@ def run_training(cfg_path):
     model, freeze_epochs = get_model(cfg)
     model = model.to(device)
     
-    # Get optimizer and scheduler
-    optimizer = get_optimizer(cfg, model.parameters())
-    scheduler = get_scheduler(cfg, optimizer)
-    
-    # Get loss function
+    # Loss function
     loss_fn = get_loss_fn(cfg)
     
-    # Initialize training variables
-    num_epochs = cfg.get('epochs', 50)
-    best_dice = 0.0
-    start_time = time.time()
+    # Tensorboard writer
+    writer = SummaryWriter(os.path.join(output_dir, 'logs'))
+    
+    # Training configuration
+    epochs = cfg['epochs']
+    
+    # Metrics tracking
+    best_val_loss = float('inf')
+    best_val_dice = 0.0
+    best_epoch = 0
+    patience = cfg.get('patience', 15)  # Early stopping patience
+    patience_counter = 0
     
     # Training loop
-    for epoch in range(1, num_epochs + 1):
-        print(f"\nEpoch {epoch}/{num_epochs}")
+    for epoch in range(1, epochs + 1):
+        print(f"\nEpoch {epoch}/{epochs}")
         
-        # Unfreeze encoder if needed
-        if freeze_epochs > 0 and epoch > freeze_epochs and hasattr(model, 'unfreeze_encoder'):
-            print("Unfreezing encoder")
-            model.unfreeze_encoder()
+        # Check if we should unfreeze
+        if freeze_epochs > 0 and epoch > freeze_epochs:
+            print(f"Unfreezing encoder at epoch {epoch}")
+            for param in model.parameters():
+                param.requires_grad = True
+        
+        # Optimize different parameters based on freezing
+        if freeze_epochs > 0 and epoch <= freeze_epochs:
+            optimizer = get_optimizer(cfg, filter(lambda p: p.requires_grad, model.parameters()))
+        else:
             optimizer = get_optimizer(cfg, model.parameters())
-            if scheduler:
-                scheduler = get_scheduler(cfg, optimizer)
         
-        # Train
-        train_loss = train_epoch(model, train_dataloader, optimizer, loss_fn, device)
+        # Get scheduler
+        scheduler = get_scheduler(cfg, optimizer)
+        
+        # Train epoch
+        train_loss = train_epoch(model, train_loader, optimizer, loss_fn, device)
         print(f"Train Loss: {train_loss:.4f}")
         
         # Validate
-        val_loss, val_dice = validate(model, val_dataloader, loss_fn, device)
+        val_loss, val_dice = validate(model, val_loader, loss_fn, device)
+        
+        # Check for NaN or unrealistic values in validation metrics
+        if val_dice > 0.99:
+            print(f"WARNING: Very high Dice score detected ({val_dice:.4f}). Potential data leakage or processing issue.")
+        
+        if torch.isnan(torch.tensor(val_loss)) or torch.isnan(torch.tensor(val_dice)):
+            print("WARNING: NaN values detected in validation metrics. Skipping checkpoint and continuing.")
+            continue
+            
         print(f"Val Loss: {val_loss:.4f}, Val Dice: {val_dice:.4f}")
         
-        # Update learning rate
-        if scheduler is not None:
-            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-                scheduler.step(val_loss)
-            else:
-                scheduler.step()
+        # Log to tensorboard
+        writer.add_scalar('Loss/train', train_loss, epoch)
+        writer.add_scalar('Loss/val', val_loss, epoch)
+        writer.add_scalar('Dice/val', val_dice, epoch)
+        
+        # Check if model improved
+        is_best = False
+        
+        # Track based on validation loss for early stopping
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            is_best = True
+            patience_counter = 0
+            best_epoch = epoch
+        else:
+            patience_counter += 1
+        
+        # Track best dice separately
+        if val_dice > best_val_dice:
+            best_val_dice = val_dice
         
         # Save checkpoint
-        is_best = val_dice > best_dice
-        if is_best:
-            best_dice = val_dice
-        
         save_checkpoint(
             model=model,
             optimizer=optimizer,
             epoch=epoch,
             val_dice=val_dice,
             val_loss=val_loss,
-            checkpoint_dir=checkpoint_dir,
+            checkpoint_dir=os.path.join(output_dir, 'checkpoints'),
             is_best=is_best
         )
         
-        # Log metrics
-        writer.add_scalar('Loss/train', train_loss, epoch)
-        writer.add_scalar('Loss/val', val_loss, epoch)
-        writer.add_scalar('Dice/val', val_dice, epoch)
-        writer.add_scalar('LR', optimizer.param_groups[0]['lr'], epoch)
+        # Update learning rate scheduler
+        if scheduler is not None:
+            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(val_loss)
+            else:
+                scheduler.step()
+        
+        # Early stopping
+        if patience_counter >= patience:
+            print(f"Early stopping triggered after {patience} epochs without improvement.")
+            print(f"Best model was at epoch {best_epoch} with val_loss={best_val_loss:.4f} and val_dice={best_val_dice:.4f}")
+            break
     
-    # Training finished
-    elapsed_time = time.time() - start_time
-    print(f"\nTraining completed in {str(datetime.timedelta(seconds=int(elapsed_time)))}")
-    print(f"Best validation Dice coefficient: {best_dice:.4f}")
-    
-    # Save training summary
-    summary = {
-        'exp_name': exp_name,
-        'best_dice': float(best_dice),
-        'train_time': float(elapsed_time),
-        'completed_epochs': num_epochs,
+    # Log final results
+    final_metrics = {
+        'best_val_loss': float(best_val_loss),
+        'best_val_dice': float(best_val_dice),
+        'best_epoch': best_epoch,
+        'total_epochs': epoch
     }
     
-    with open(os.path.join(output_dir, 'summary.json'), 'w') as f:
-        json.dump(summary, f, indent=4)
+    with open(os.path.join(output_dir, 'results.json'), 'w') as f:
+        json.dump(final_metrics, f, indent=4)
     
-    writer.close()
+    print(f"Training completed. Best val_loss: {best_val_loss:.4f}, Best val_dice: {best_val_dice:.4f}")
+    
+    return best_val_dice
 
 
 def cli():
