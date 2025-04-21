@@ -149,5 +149,6 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-
-data/
+# Data directories
+# But don't ignore the src/data folder which contains our code
+/data/
