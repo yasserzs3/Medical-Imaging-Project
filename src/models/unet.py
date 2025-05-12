@@ -163,8 +163,9 @@ def build_unet(in_channels=1, n_classes=1, bilinear=True):
     Returns:
         UNet: The constructed U-Net model
     """
-    # Default feature sizes for each level
-    features = [32, 64, 128, 256]
+    # Feature sizes increased by ~12% to achieve ~25% parameter increase
+    # Original: [32, 64, 128, 256]
+    features = [36, 72, 144, 288]
     # Moderate dropout rate
     dropout_rate = 0.2
     
