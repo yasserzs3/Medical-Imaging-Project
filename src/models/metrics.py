@@ -69,13 +69,17 @@ class ConfusionMatrix:
         f1 = 2 * precision * recall / (precision + recall + epsilon)
         iou = self.tp / (self.tp + self.fp + self.fn + epsilon)
         
+        # Calculate Dice coefficient (similar to F1 but for segmentation)
+        dice = (2.0 * self.tp) / (2.0 * self.tp + self.fp + self.fn + epsilon)
+        
         return {
             'accuracy': accuracy,
             'precision': precision,
             'recall': recall,
             'specificity': specificity,
             'f1': f1,
-            'iou': iou
+            'iou': iou,
+            'dice': dice
         }
         
     def __str__(self):
@@ -88,6 +92,7 @@ class ConfusionMatrix:
                 f"Recall: {metrics['recall']:.4f}\n"
                 f"Specificity: {metrics['specificity']:.4f}\n"
                 f"F1 Score: {metrics['f1']:.4f}\n"
+                f"Dice Score: {metrics['dice']:.4f}\n"
                 f"IoU: {metrics['iou']:.4f}")
 
 

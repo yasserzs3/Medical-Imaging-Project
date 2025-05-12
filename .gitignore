@@ -152,3 +152,6 @@ cython_debug/
 # Data directories
 # But don't ignore the src/data folder which contains our code
 /data/
+
+# Visualization results directory
+*/visualization_results/
