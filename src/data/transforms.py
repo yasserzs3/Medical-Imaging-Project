@@ -23,9 +23,21 @@ class RandomRotation:
         
     def __call__(self, image, mask):
         if random.random() < 0.5:
+            # Store original size
+            orig_size = image.shape[-2:]
+            
+            # Perform rotation
             angle = random.uniform(-self.degrees, self.degrees)
             image = transforms.functional.rotate(image, angle)
             mask = transforms.functional.rotate(mask, angle)
+            
+            # Resize back to original dimensions to ensure consistent sizes
+            if image.shape[-2:] != orig_size:
+                image = transforms.functional.resize(image, orig_size, 
+                                               transforms.InterpolationMode.BILINEAR)
+                mask = transforms.functional.resize(mask, orig_size, 
+                                              transforms.InterpolationMode.NEAREST)
+        
         return image, mask
 
 
@@ -36,6 +48,9 @@ class RandomShift:
         
     def __call__(self, image, mask):
         if random.random() < 0.5:
+            # Store original size
+            orig_size = image.shape[-2:]
+            
             height, width = image.shape[1:]
             
             # Calculate shift amount
@@ -53,6 +68,13 @@ class RandomShift:
             image = transforms.functional.affine(image, angle=0, translate=translate, scale=1.0, shear=0)
             mask = transforms.functional.affine(mask, angle=0, translate=translate, scale=1.0, shear=0)
             
+            # Resize back to original dimensions if needed
+            if image.shape[-2:] != orig_size:
+                image = transforms.functional.resize(image, orig_size, 
+                                             transforms.InterpolationMode.BILINEAR)
+                mask = transforms.functional.resize(mask, orig_size, 
+                                             transforms.InterpolationMode.NEAREST)
+            
         return image, mask
 
 
@@ -63,45 +85,45 @@ class RandomZoom:
         
     def __call__(self, image, mask):
         if random.random() < 0.5:
-            height, width = image.shape[1:]
+            # Store original size
+            orig_size = image.shape[-2:]
+            
+            # Calculate random scale factor
             scale = random.uniform(1 - self.zoom_limit, 1 + self.zoom_limit)
             
-            if scale != 1:
-                # Resize using torchvision
-                new_h = int(height * scale)
-                new_w = int(width * scale)
-                
-                # Resize with bilinear interpolation for image
-                image = transforms.functional.resize(image, (new_h, new_w), 
-                                                  transforms.InterpolationMode.BILINEAR)
-                
-                # Resize with nearest neighbor for mask to preserve binary values
-                mask = transforms.functional.resize(mask, (new_h, new_w), 
-                                                 transforms.InterpolationMode.NEAREST)
-                
-                # Crop or pad to original size
-                if new_h > height:
-                    diff = new_h - height
-                    image = image[:, diff//2:diff//2 + height, :]
-                    mask = mask[:, diff//2:diff//2 + height, :]
-                elif new_h < height:
-                    diff = height - new_h
-                    padding = (0, 0, 0, 0, diff//2, diff - diff//2)
-                    image = torch.nn.functional.pad(image, padding)
-                    mask = torch.nn.functional.pad(mask, padding)
-                    
-                if new_w > width:
-                    diff = new_w - width
-                    image = image[:, :, diff//2:diff//2 + width]
-                    mask = mask[:, :, diff//2:diff//2 + width]
-                elif new_w < width:
-                    diff = width - new_w
-                    padding = (diff//2, diff - diff//2, 0, 0, 0, 0)
-                    image = torch.nn.functional.pad(image, padding)
-                    mask = torch.nn.functional.pad(mask, padding)
-                    
-            return image, mask
+            # Apply zoom using scale factor
+            image = transforms.functional.affine(
+                image, 
+                angle=0, 
+                translate=(0, 0), 
+                scale=scale, 
+                shear=0,
+                interpolation=transforms.InterpolationMode.BILINEAR
+            )
             
+            mask = transforms.functional.affine(
+                mask, 
+                angle=0, 
+                translate=(0, 0), 
+                scale=scale, 
+                shear=0,
+                interpolation=transforms.InterpolationMode.NEAREST
+            )
+            
+            # Resize back to original dimensions
+            if image.shape[-2:] != orig_size:
+                image = transforms.functional.resize(
+                    image, 
+                    orig_size, 
+                    interpolation=transforms.InterpolationMode.BILINEAR
+                )
+                
+                mask = transforms.functional.resize(
+                    mask, 
+                    orig_size, 
+                    interpolation=transforms.InterpolationMode.NEAREST
+                )
+                
         return image, mask
 
 
@@ -116,6 +138,51 @@ class TransformCompose:
         return image, mask
 
 
+class EnsureSizeConsistency:
+    """Ensure that images and masks maintain consistent size throughout transformations."""
+    def __init__(self, transform, size=None):
+        """
+        Args:
+            transform: The transform pipeline to apply
+            size: The target size (H, W) to enforce, or None to use input size
+        """
+        self.transform = transform
+        self.size = size
+        
+    def __call__(self, image, mask):
+        # Store original size if no specific size is provided
+        if self.size is None:
+            target_size = image.shape[-2:]
+        else:
+            target_size = self.size
+            
+        # Apply transformations
+        image, mask = self.transform(image, mask)
+        
+        # Resize to original dimensions if needed
+        if image.shape[-2:] != target_size:
+            image = transforms.functional.resize(
+                image, 
+                target_size, 
+                interpolation=transforms.InterpolationMode.BILINEAR
+            )
+            
+            mask = transforms.functional.resize(
+                mask, 
+                target_size, 
+                interpolation=transforms.InterpolationMode.NEAREST
+            )
+            
+        # Check channel dimension - ensure consistency
+        if image.shape[0] != mask.shape[0]:
+            # Typically we want to keep mask as 1-channel
+            if mask.shape[0] > 1:
+                # Convert multi-channel mask to single channel
+                mask = mask[0].unsqueeze(0)
+                
+        return image, mask
+
+
 def get_transforms(mode='train'):
     """
     Get transforms for training or validation/testing.
@@ -127,11 +194,13 @@ def get_transforms(mode='train'):
         TransformCompose: Composed transforms
     """
     if mode == 'train':
-        return TransformCompose([
+        transforms_list = [
             RandomFlip(p=0.5),
             RandomRotation(degrees=20),  
             RandomShift(shift_limit=0.05),
             RandomZoom(zoom_limit=0.05),
-        ])
+        ]
+        # Wrap with consistency checker
+        return EnsureSizeConsistency(TransformCompose(transforms_list))
     else:
         return TransformCompose([])  # No augmentations for val/test 
