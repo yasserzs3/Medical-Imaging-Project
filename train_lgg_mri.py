@@ -2,8 +2,6 @@
 
 import os
 import argparse
-import yaml
-import time
 import datetime
 import json
 import numpy as np
@@ -16,14 +14,12 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from src.data.lgg_dataset import (
-    create_dataframe, 
-    split_dataframe,
-    BrainMRISegmentationDataset,
-    get_transforms
-)
-from src.models.unet_scratch import UNet as build_unet
-from src.models.metrics import dice_coef, dice_loss, iou_score, iou_loss, ComboLoss, ConfusionMatrix
+# Import from the updated module structure
+from src.data.dataset import create_dataframe, split_dataframe, BrainMRISegmentationDataset
+from src.data.transforms import get_transforms
+from src.models.unet import build_unet
+from src.models.losses import dice_loss, iou_loss, ComboLoss, dice_coef, iou_score
+from src.models.metrics import ConfusionMatrix
 
 
 def set_seed(seed):
@@ -244,6 +240,24 @@ def train(args):
     best_loss = float('inf')
     patience_counter = 0
     
+    # Initialize metrics tracking dictionary for JSON
+    metrics_history = {
+        'epochs': [],
+        'train_loss': [],
+        'val_loss': [],
+        'val_dice': [],
+        'val_iou': [],
+        'val_accuracy': [],
+        'val_precision': [],
+        'val_recall': [],
+        'val_specificity': [],
+        'val_f1': [],
+        'lr': []
+    }
+    
+    # Path for metrics JSON file
+    metrics_json_path = os.path.join(output_dir, 'training_metrics.json')
+    
     # Training loop
     for epoch in range(1, args.epochs + 1):
         print(f"\nEpoch {epoch}/{args.epochs}")
@@ -258,6 +272,24 @@ def train(args):
         
         # Update learning rate
         scheduler.step(val_loss)
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        # Update metrics history dictionary
+        metrics_history['epochs'].append(epoch)
+        metrics_history['train_loss'].append(float(train_loss))
+        metrics_history['val_loss'].append(float(val_loss))
+        metrics_history['val_dice'].append(float(val_dice))
+        metrics_history['val_iou'].append(float(val_iou))
+        metrics_history['val_accuracy'].append(float(detailed_metrics['accuracy']))
+        metrics_history['val_precision'].append(float(detailed_metrics['precision']))
+        metrics_history['val_recall'].append(float(detailed_metrics['recall']))
+        metrics_history['val_specificity'].append(float(detailed_metrics['specificity']))
+        metrics_history['val_f1'].append(float(detailed_metrics['f1']))
+        metrics_history['lr'].append(float(current_lr))
+        
+        # Save updated metrics to JSON file after each epoch
+        with open(metrics_json_path, 'w') as f:
+            json.dump(metrics_history, f, indent=4)
         
         # Log metrics
         writer.add_scalar('Loss/train', train_loss, epoch)
@@ -269,7 +301,7 @@ def train(args):
         writer.add_scalar('Recall/val', detailed_metrics['recall'], epoch)
         writer.add_scalar('Specificity/val', detailed_metrics['specificity'], epoch)
         writer.add_scalar('F1/val', detailed_metrics['f1'], epoch)
-        writer.add_scalar('LR', optimizer.param_groups[0]['lr'], epoch)
+        writer.add_scalar('LR', current_lr, epoch)
         
         # Calculate combined metric (Dice + IoU) / 2
         combined_metric = (val_dice + val_iou) / 2
@@ -353,7 +385,7 @@ def train(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Train UNet for brain MRI segmentation")
-    parser.add_argument("--data_dir", type=str, default="data/raw", help="Directory containing image and mask files")
+    parser.add_argument("--data_dir", type=str, default="data/raw/lgg-mri-segmentation/kaggle_3m", help="Directory containing image and mask files")
     parser.add_argument("--output_dir", type=str, default="outputs", help="Directory to save models and logs")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs")

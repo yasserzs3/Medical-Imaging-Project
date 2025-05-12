@@ -1,3 +1,1 @@
-"""
-Model architectures for medical image segmentation.
-""" 
+"""Models module for brain MRI segmentation.""" 

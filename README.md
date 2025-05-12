@@ -1,140 +1,63 @@
-# Medical Imaging Project
+# Brain MRI Segmentation Project
 
-A deep learning project for brain tumor segmentation using U-Net architectures.
-
-## Project Overview
-
-This project implements a pipeline for brain tumor segmentation using MRI images. It includes data preprocessing, model training, and evaluation components. 
-
-The main features include:
-- Data preprocessing pipeline with skull-stripping and normalization
-- Multiple U-Net architectures (from scratch and with pre-trained ResNet-34 backbone)
-- Configurable training settings
-- Performance evaluation with standard metrics
-- Ensemble model capabilities
-
-## Prerequisites
-
-- Python 3.7+
-- PyTorch 1.7+
-- CUDA-compatible GPU (recommended for training)
-
-## Installation
-
-1. Clone the repository:
-```
-git clone https://github.com/yourusername/Medical-Imaging-Project.git
-cd Medical-Imaging-Project
-```
-
-2. Create and activate a virtual environment:
-```
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-
-3. Install dependencies:
-```
-pip install -r requirements.txt
-```
-
-## Dataset
-
-This project uses the Brain MRI Segmentation dataset from Kaggle. Download the dataset from:
-[Brain MRI Segmentation](https://www.kaggle.com/mateuszbuda/lgg-mri-segmentation)
-
-Place the downloaded data in the `data/raw` directory. The dataset contains brain MRI images and corresponding segmentation masks.
+A deep learning project for segmenting brain MRI scans using a UNet architecture.
 
 ## Project Structure
 
 ```
-Medical-Imaging-Project/
-├── README.md                  # Project documentation
-├── data/                      # Data directory (not committed)
-│   ├── raw/                   # Original .tif from Kaggle
-│   ├── interim/               # Pre-processed .npy files
-│   └── splits/                # Patient-level split metadata
-│       └── splits.csv
-├── src/                       # Source code
-│   ├── data/                  # Data processing modules
-│   │   ├── dataset.py         # PyTorch dataset implementation
-│   │   ├── splitter.py        # Train/val/test splitting
-│   │   └── preprocess.py      # Data preprocessing
-│   ├── models/                # Model architectures
-│   │   ├── unet_scratch.py    # U-Net from scratch
-│   │   └── unet_resnet34.py   # U-Net with ResNet34 backbone
-│   ├── train.py               # Training script
-│   ├── predict.py             # Inference script
-│   └── ensemble.py            # Ensemble model implementation
-├── config/                    # Configuration files
-│   ├── unet_s.yaml            # Config for U-Net from scratch
-│   ├── unet_tl.yaml           # Config for transfer learning U-Net
-│   └── ensemble.yaml          # Config for ensemble model
-├── notebooks/                 # Jupyter notebooks
-└── outputs/                   # Training outputs (not committed)
+.
+├── data/
+│   └── raw/                 # Raw MRI images and masks
+├── outputs/                 # Training outputs and saved models
+├── src/
+│   ├── data/                # Data loading and preprocessing
+│   │   ├── dataset.py       # Dataset classes and data loading utilities
+│   │   └── transforms.py    # Data augmentation transformations
+│   └── models/              # Model architectures
+│       ├── losses.py        # Loss functions 
+│       ├── metrics.py       # Evaluation metrics
+│       └── unet.py          # UNet implementation
+└── train_lgg_mri.py         # Main training script
 ```
 
-## Usage
+## Setup
 
-### 1. Data Preprocessing
+1. Install dependencies:
 
-Preprocess the raw data to prepare it for training:
-
-```
-python -m src.data.preprocess --input_dir data/raw --output_dir data/interim --skull_strip --normalization zscore
+```bash
+pip install -r requirements.txt
 ```
 
-### 2. Create Data Splits
+2. Prepare your data in the `data/raw` directory with the following structure:
+   - Each patient should have a folder
+   - Images and masks should be paired, with masks having "_mask" suffix
 
-Create patient-level train/validation/test splits:
+## Training
 
-```
-python -m src.data.splitter --data_dir data/interim --output data/splits/splits.csv
-```
+To train the model with default parameters:
 
-### 3. Training Models
-
-Train the U-Net model from scratch:
-
-```
-python -m src.train --cfg config/unet_s.yaml
+```bash
+python train_lgg_mri.py
 ```
 
-Train the U-Net model with ResNet-34 backbone:
+For additional options:
 
-```
-python -m src.train --cfg config/unet_tl.yaml
-```
-
-### 4. Model Inference
-
-Run inference with a trained model:
-
-```
-python -m src.predict --checkpoint outputs/unet_s/checkpoints/best.pt --save_logits
+```bash
+python train_lgg_mri.py --help
 ```
 
-### 5. Ensemble Prediction
-
-Create an ensemble of multiple models:
-
-```
-python -m src.ensemble --cfg config/ensemble.yaml
-```
+Common parameters:
+- `--data_dir`: Path to data directory (default: "data/raw")
+- `--batch_size`: Batch size (default: 16)
+- `--epochs`: Number of epochs (default: 100)
+- `--lr`: Learning rate (default: 0.0001)
+- `--in_channels`: Number of input channels (1 for grayscale, 3 for RGB)
+- `--augment`: Use data augmentation
+- `--loss_type`: Loss function to use (choices: bce, dice, iou, bce_dice, bce_iou, combo)
 
 ## Results
 
-| Model | Dice Score | Precision | Recall |
-|-------|------------|-----------|--------|
-| U-Net | 0.85       | 0.87      | 0.83   |
-| U-Net ResNet34 | 0.89 | 0.91 | 0.87 |
-| Ensemble | 0.91 | 0.92 | 0.90 |
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- The U-Net architecture is based on [U-Net: Convolutional Networks for Biomedical Image Segmentation](https://arxiv.org/abs/1505.04597)
-- Brain MRI dataset from Kaggle provided by Mateusz Buda 
+Training results are saved in the `outputs` directory with timestamped folders containing:
+- Model checkpoints
+- TensorBoard logs
+- Training arguments and results 
